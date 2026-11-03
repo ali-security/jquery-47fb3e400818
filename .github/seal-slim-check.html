@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>seal slim build check</title>
+</head>
+<body>
+<!--
+	Exploit checks for the stray 3.0.0-beta1 slim build (dist/jquery.slim.js
+	and .min.js) that .github/seal-slim.js patches. seal-build.yml copies this
+	page next to the file under test as jquery-under-test.js and loads it in
+	headless Chrome with --dump-dom; the result line below is what it greps.
+-->
+<pre id="seal-result">SEAL-SLIM-CHECK: NOT RUN</pre>
+<script src="jquery-under-test.js"></script>
+<script>
+( function() {
+	var failures = [],
+
+		// The CVE the checks below belong to; each failure is tagged with it so
+		// seal-build.yml can confirm every CVE reproduces on the unpatched file.
+		cve = "",
+		out = document.getElementById( "seal-result" );
+
+	function check( ok, msg ) {
+		if ( !ok ) {
+			failures.push( cve + ": " + String( msg ).replace( /\n/g, "\\n" ) );
+		}
+	}
+
+	function isTag( elem, tag ) {
+		return !!elem && !!elem.nodeName && elem.nodeName.toLowerCase() === tag;
+	}
+
+	try {
+		if ( !window.jQuery ) {
+			throw new Error( "jQuery did not load" );
+		}
+
+		// CVE-2020-11023 (gh-4647): <option>/<optgroup> HTML must not be parsed
+		// in a <select> context, where a closing </select> breaks out of it.
+		cve = "CVE-2020-11023";
+		jQuery.each( [ "option", "optgroup" ], function( i, tag ) {
+			var elems, div,
+				html = "<" + tag + ">a</" + tag + "></select><b>b</b>";
+
+			elems = jQuery( html );
+			check( elems.length === 2 && isTag( elems[ 0 ], tag ) && isTag( elems[ 1 ], "b" ),
+				"jQuery( html ) " + tag + ": got " + elems.length + " node(s)" );
+
+			elems = jQuery.parseHTML( html );
+			check( elems.length === 2 && isTag( elems[ 0 ], tag ),
+				"jQuery.parseHTML " + tag + ": got " + elems.length + " node(s)" );
+
+			div = jQuery( "<div/>" ).html( html );
+			check( div.children().length === 2 && isTag( div[ 0 ].firstChild, tag ),
+				".html() " + tag + ": got " + div.children().length + " child(ren)" );
+
+			div = jQuery( "<div/>" ).append( html );
+			check( div.children().length === 2 && isTag( div[ 0 ].firstChild, tag ),
+				".append() " + tag + ": got " + div.children().length + " child(ren)" );
+		} );
+
+		// Cure53 payload: sanitized markup must stay inert text inside <style>;
+		// no <img onerror> element may be created from it.
+		jQuery.each( [
+			[ "<option><style></option></select><img src=url404 onerror=xss(0)></style>", "html" ],
+			[ "<option><style></option></select><img src=url404 onerror=xss(1)></style>", "append" ],
+			[ "<option><style></option></select><img src=url404 onerror=xss(2)></style>", "jQuery" ],
+			[ "<optgroup><style></optgroup></select><img src=url404 onerror=xss(3)></style>", "html" ]
+		], function( i, test ) {
+			var div = jQuery( "<div></div>" );
+			if ( test[ 1 ] === "jQuery" ) {
+				div.append( jQuery( test[ 0 ] ) );
+			} else {
+				div[ test[ 1 ] ]( test[ 0 ] );
+			}
+			check( div.find( "img" ).length === 0 &&
+				/onerror=xss/.test( div.find( "style" ).text() ),
+				test[ 1 ] + ": " + test[ 0 ] + " created " + div.find( "img" ).length + " <img>" );
+		} );
+
+		// CVE-2020-11022 (gh-4642): htmlPrefilter must not rewrite <x/> into
+		// <x></x>, which turns markup sanitized into inert text (raw text of
+		// <style>, <title>, <iframe>, ... or an attribute value) into live
+		// elements. Cure53 payloads: no element with an onerror handler may be
+		// created from them.
+		cve = "CVE-2020-11022";
+		check( jQuery.htmlPrefilter( "<div/><span title='/>'/>" ) === "<div/><span title='/>'/>",
+			"jQuery.htmlPrefilter rewrote its input" );
+		jQuery.each( [
+			[ "<img alt=\"<x\" title=\"/><img src=url404 onerror=xss(0)>\">", "html" ],
+			[ "<img alt=\"\n<x\" title=\"/>\n<img src=url404 onerror=xss(1)>\">", "html" ],
+			[ "<style><style/><img src=url404 onerror=xss(2)>", "html" ],
+			[ "<xmp><xmp/><img src=url404 onerror=xss(3)>", "html" ],
+			[ "<title><title /><img src=url404 onerror=xss(4)>", "html" ],
+			[ "<iframe><iframe/><img src=url404 onerror=xss(5)>", "html" ],
+			[ "<noframes><noframes/><img src=url404 onerror=xss(6)>", "html" ],
+			[ "<noscript><noscript/><img src=url404 onerror=xss(7)>", "html" ],
+			[ "<foo\" alt=\"\" title=\"/><img src=url404 onerror=xss(8)>\">", "html" ],
+			[ "<img alt=\"<x\" title=\"\" src=\"/><img src=url404 onerror=xss(9)>\">", "html" ],
+			[ "<noscript/><img src=url404 onerror=xss(10)>", "html" ],
+			[ "<noembed><noembed/><img src=url404 onerror=xss(11)>", "html" ],
+			[ "<style><style/><img src=url404 onerror=xss(12)>", "append" ],
+			[ "<title><title /><img src=url404 onerror=xss(13)>", "append" ],
+			[ "<noscript/><img src=url404 onerror=xss(14)>", "append" ],
+			[ "<style><style/><img src=url404 onerror=xss(15)>", "jQuery" ],
+			[ "<iframe><iframe/><img src=url404 onerror=xss(16)>", "jQuery" ],
+			[ "<noscript/><img src=url404 onerror=xss(17)>", "jQuery" ]
+		], function( i, test ) {
+			var div = jQuery( "<div></div>" );
+			if ( test[ 1 ] === "jQuery" ) {
+				div.append( jQuery( test[ 0 ] ) );
+			} else {
+				div[ test[ 1 ] ]( test[ 0 ] );
+			}
+			check( div.find( "[onerror]" ).length === 0,
+				test[ 1 ] + ": " + test[ 0 ] + " created " + div.find( "[onerror]" ).length +
+				" element(s) with an onerror handler" );
+		} );
+
+		// CVE-2019-11358: a deep jQuery.extend of a "__proto__" own key (as
+		// JSON.parse creates it) must not modify Object.prototype.
+		cve = "CVE-2019-11358";
+		jQuery.each( [
+			"{\"__proto__\": {\"sealDevMode\": true}}",
+			"{\"a\": {\"__proto__\": {\"sealDevMode\": true}}}"
+		], function( i, json ) {
+			jQuery.extend( true, {}, JSON.parse( json ) );
+			check( !( "sealDevMode" in {} ),
+				"jQuery.extend( true, {}, " + json + " ) polluted Object.prototype" );
+			delete Object.prototype.sealDevMode;
+		} );
+
+		// CVE-2016-10707 (gh-2914): reading a boolean attribute through the
+		// selector engine under a non-lowercase name must return the lowercase
+		// name, not recurse until the stack overflows (RangeError). A fresh
+		// element each time; no "checked", whose handler other code may swap.
+		cve = "CVE-2016-10707";
+		jQuery.each( {
+			disabled: "DisAbled",
+			required: "requiRed",
+			autofocus: "AUTOFOCUS"
+		}, function( lowercased, original ) {
+			var ret,
+				elem = jQuery( "<input disabled required autofocus type='checkbox'>" )[ 0 ];
+			try {
+				ret = jQuery.find.attr( elem, original );
+				check( ret === lowercased,
+					"jQuery.find.attr( input, \"" + original + "\" ) returned " + ret );
+			} catch ( e ) {
+				check( false, "jQuery.find.attr( input, \"" + original + "\" ) threw " +
+					( e && e.name ? e.name + ": " + e.message : e ) );
+			}
+		} );
+
+		out.textContent = failures.length ?
+			"SEAL-SLIM-CHECK: FAIL " + jQuery.fn.jquery + " | " + failures.join( " | " ) :
+			"SEAL-SLIM-CHECK: PASS " + jQuery.fn.jquery;
+	} catch ( e ) {
+		out.textContent = "SEAL-SLIM-CHECK: ERROR " + ( e && e.message ? e.message : e );
+	}
+} )();
+</script>
+</body>
+</html>
